@@ -9,8 +9,8 @@ TEST_CASE("ArgsParser tests", "[ArgsParser]")
     SECTION("normal behaviour no errors")
     {
         ruleset_t rules{
-            {"a", {true, ""}},
-            {"b", {true, ""}},
+            {"a", {true, ARG_DEF_VAL_NOT_SET}},
+            {"b", {true, ARG_DEF_VAL_NOT_SET}},
             {"c", {false, "C"}},
         };
 
@@ -33,8 +33,8 @@ TEST_CASE("ArgsParser tests", "[ArgsParser]")
     SECTION("invalid args, exceptions expected")
     {
         ruleset_t rules{
-            {"a", {true, ""}},
-            {"b", {true, ""}},
+            {"a", {true, ARG_DEF_VAL_NOT_SET}},
+            {"b", {true, ARG_DEF_VAL_NOT_SET}},
             {"c", {false, "C"}},
         };
 
@@ -67,9 +67,9 @@ TEST_CASE("ArgsParser tests", "[ArgsParser]")
     SECTION("moodle examples section A")
     {
         ruleset_t rules{
-            {"h", {true, ""}},
-            {"r", {true, ""}},
-            {"p", {true, ""}},
+            {"h", {true, ARG_DEF_VAL_NOT_SET}},
+            {"r", {true, ARG_DEF_VAL_NOT_SET}},
+            {"p", {true, ARG_DEF_VAL_NOT_SET}},
             {"m", {false, "no"}},
             {"t", {false, "5"}},
         };
@@ -116,13 +116,13 @@ TEST_CASE("ArgsParser tests", "[ArgsParser]")
     SECTION("moodle examples section B")
     {
         ruleset_t rules{
-            {"h", {true, ""}},
-            {"r", {true, ""}},
-            {"p", {true, ""}},
+            {"h", {true, ARG_DEF_VAL_NOT_SET}},
+            {"r", {true, ARG_DEF_VAL_NOT_SET}},
+            {"p", {true, ARG_DEF_VAL_NOT_SET}},
             {"m", {false, "no"}},
             {"t", {false, "5"}},
-            {"P", {true, ""}},
-            {"B", {false, ""}},
+            {"P", {true, ARG_DEF_VAL_NOT_SET}},
+            {"B", {false, ARG_DEF_VAL_NOT_SET}},
             {"T", {false, "5"}},
         };
 
