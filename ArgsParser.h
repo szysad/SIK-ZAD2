@@ -12,7 +12,7 @@ class ArgsParser {
 
     public:
     /* <key, <is_mandatory, deafult value (if nullptr no deafult value)>> */
-    ArgsParser(ruleset_t &rules) : rules(rules) {}
+    ArgsParser(const ruleset_t &rules) : rules(rules) {}
 
     arguments_t parse_params(int argc, char *argv[]) noexcept(false) {
         arguments_t params;
