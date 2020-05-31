@@ -14,6 +14,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <cassert>
+
 
 #define INIT_BUFFER_SIZE 4056
 #define MILI 1000
@@ -21,6 +23,9 @@
 #define WAIT_MILI_AFTER_ERR 200
 #define BUFF_EXPANTION 2
 #define RESPONSE_LINE "RESPONSE_LINE"
+#define RESPONSE_CODE_OK 200
+#define METAINT_HEADER_KEY "ICY-METAINT"
+#define METADATA_SIZE_RATIO 16
 
 #define SNPRINTF_UPDATE(last_read, free_b, written_b, ...) {    int tmp;\
                                                                 tmp = snprintf(last_read, free_b, __VA_ARGS__);\
@@ -71,6 +76,25 @@ struct DataNotReceivedYetException : public ICYStramException {
     }
 };
 
+struct ResponseCodeNot200Exception : public ICYStramException {
+    const char* what() const throw() {
+        return "ResponseCodeNot200Exception";
+    }
+};
+
+struct HeaderWrongSyntacException : public ICYStramException {
+    const char* what() const throw() {
+        return "HeaderWrongSyntacException";
+    }
+};
+
+struct ICYMetaIntInvalidValueException : public ICYStramException {
+    const char* what() const throw() {
+        return "ICYMetaIntInvalidValueException";
+    }
+};
+
+
 class ICYStream {
     
     std::string port;
@@ -79,6 +103,7 @@ class ICYStream {
     std::string resource;
     int timeout;
     bool header_fields_set;
+    bool keep_processing;
     char *buffer;
     char *last_read;
     char *last_processed;
@@ -86,7 +111,7 @@ class ICYStream {
 
     public:
     ICYStream(std::string hostname, std::string port, std::string resource, int timeout) : port(port), hostname(hostname),
-        buff_size(INIT_BUFFER_SIZE), resource(resource), timeout(timeout), header_fields_set(false) {
+        buff_size(INIT_BUFFER_SIZE), resource(resource), timeout(timeout), header_fields_set(false), keep_processing(true) {
             buffer = new char[INIT_BUFFER_SIZE];
             last_read = last_processed = buffer;
         }
@@ -97,7 +122,7 @@ class ICYStream {
     private:
     int set_up_conn(std::string addr, std::string port) noexcept(false) {
         struct addrinfo addr_hints, *addr_result;
-        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
         if (sock < 0) throw ConnectionCreationErrorException();
 
@@ -122,7 +147,8 @@ class ICYStream {
     }
 
     int buff_freebytes() {
-        return buff_size - (last_read - buffer);
+        int already_processed_or_read = last_read - buffer;
+        return buff_size - already_processed_or_read;
     }
 
     void reset_pointers() {
@@ -160,9 +186,12 @@ class ICYStream {
     void swap_buffer() {
         int already_processed = last_processed - buffer;
         int not_processed = last_read - last_processed;
-        memmove(buffer, buffer + already_processed, buff_size - already_processed);
+        std::string before(last_processed, not_processed); // DEBUG
+        memmove(buffer, buffer + already_processed, not_processed);
         last_processed = buffer;
         last_read = buffer + not_processed;
+        std::string after(last_processed, not_processed); // DEBUG
+        assert(before == after); // DEBUG
     }
 
     void clear_buffer() {
@@ -195,6 +224,7 @@ class ICYStream {
     }
 
     void read_from_sock(int sock, struct pollfd pollfd[1], int n) noexcept(false) {
+        assert(n <= buff_freebytes() && n > 0); // DEBUG
         int read_errs = 0;
         if (poll(pollfd, 1, timeout * MILI) != 1)
             throw ConnectionTimedOutException();
@@ -269,6 +299,84 @@ class ICYStream {
         header_fields = h_fields;
     }
 
+    std::string header_data_stringify(std::map<std::string, std::string> &h_fields) {
+        std::string str;
+        for (auto it = h_fields.begin(); it != h_fields.end(); it++) {
+            str.append(it->first + " : " + it->second + "\n");
+        }
+        return str;
+    }
+
+    int get_response_status(std::map<std::string, std::string> &h_fields) {
+        try {
+            const std::string res_line = h_fields.at(RESPONSE_LINE);
+            return std::stoi(res_line.substr(9, 3)); // 9 becouse len("HTTP/1.x ") == 9;
+        } catch (...) {
+            throw HeaderWrongSyntacException();
+        }
+    }
+
+    /* if icy-metaint header is not included it returns 0 */
+    int get_metaint(std::map<std::string, std::string> &h_fields) {
+        try {
+            const std::string metaint = h_fields.at(METAINT_HEADER_KEY);
+            return std::stoi(metaint); // 9 becouse len("HTTP/1.x ") == 9;
+        } catch(const std::out_of_range &e) {
+            return 0;
+        } catch (...) {
+            throw HeaderWrongSyntacException();
+        }
+    }
+
+    void write_n_bytes(int sock, struct pollfd pollfd[1], int n, FILE *f) noexcept(false) {
+        int processed = 0;
+        while (processed < n) {
+            read_from_sock(sock, pollfd, buff_freebytes() - 8 /* DEBUG */);
+            int not_processed = last_read - last_processed;
+            int to_write = std::min(n - processed, not_processed);
+            if (f == stderr) { // DEBUG
+                int written = fwrite(last_processed, 1, to_write, f);
+                if (written != to_write)
+                    throw StreamErrorException();
+            }
+            processed += to_write;
+            last_processed += to_write;
+            if (f == stderr) {
+                printf("%c", *(last_processed - 2));
+            }
+            swap_buffer();
+        }
+    }
+
+    void process_stream_content(int sock, struct pollfd pollfd[1]) noexcept(false) {
+        while (keep_processing) {
+            read_from_sock(sock, pollfd, buff_freebytes());
+            int not_processed = last_read - last_processed;
+            int written = fwrite(last_processed, 1, not_processed, stdout);
+            if (written != not_processed)
+                throw StreamErrorException();
+            last_processed += not_processed;
+            swap_buffer();
+        }
+    }
+
+    void process_stream_content(int sock, struct pollfd pollfd[1], int metaint) noexcept(false) {
+        while (keep_processing) {
+            /* process audio data */
+            write_n_bytes(sock, pollfd, metaint, stdout);
+            /* now last_processed should point to length_byte */
+            /* multiplication comes from SHOUTcast documentation */
+            int metadata_len = ((uint8_t) *last_processed) * METADATA_SIZE_RATIO;
+            last_processed++; /* push last_processed past metadata_len byte */
+            assert(last_processed != buffer + buff_size); // DEBUG
+            std::cout << "next metadata len = " << metadata_len << std::endl;
+            if (metadata_len == 0) { // DEBUG
+                printf("%d", *(last_processed - 1));
+            }
+            write_n_bytes(sock, pollfd, metadata_len, stderr);
+        }
+    }
+
     public:
     /* will throw if used before 'streamContent' */
     std::map<std::string, std::string> get_header_fields() noexcept(false) {
@@ -278,7 +386,7 @@ class ICYStream {
         return header_fields;
     }
 
-    void streamContent(int fd_data_output, int fd_meta_output, bool request_metadata) noexcept(false) {
+    void streamContent(bool request_metadata) noexcept(false) {
         struct pollfd pollfd[1];
         int sock = set_up_conn(hostname, port);
         pollfd->fd = sock;
@@ -290,7 +398,23 @@ class ICYStream {
             send_to_sock(sock, req_size);
             clear_buffer();
             process_header(sock, pollfd);
-            //TODO: rest
+
+            int response_code = get_response_status(header_fields);
+            int metaint = get_metaint(header_fields);
+            if (response_code != RESPONSE_CODE_OK)
+                throw ResponseCodeNot200Exception();
+            if (metaint < 0)
+                throw ICYMetaIntInvalidValueException();
+
+
+            std::string header_str = header_data_stringify(header_fields);
+            fwrite(header_str.c_str(), 1, header_str.length(), stderr);
+
+            if (metaint == 0)
+                process_stream_content(sock, pollfd);
+            else
+                process_stream_content(sock, pollfd, metaint);
+
         } catch (ICYStramException &e) {
             close(sock);
             throw;
