@@ -34,10 +34,19 @@ arguments_t validate_args(int argc, char *argv[]) noexcept(false) {
     if (m_arg != M_ARG_NO && m_arg != M_ARG_YES)
         throw "invalid value '" + m_arg + "' of key 'm'";
 
-    std::stoi(args_map.at("t")); // will throw if invalid
+    if (std::stoi(args_map.at("t")) <= 0) // will throw if invalid
+        throw "timeout must be positive integer";
     
     return args_map;
 }
+
+data_accesor write_mp3 = [](const char *data, int data_len) {
+    return fwrite(data, 1, data_len, stdout);
+};
+
+data_accesor write_meta = [](const char *data, int data_len) {
+    return fwrite(data, 1, data_len, stderr);
+};
 
 int main(int argc, char *argv[]) {
 
@@ -54,7 +63,7 @@ int main(int argc, char *argv[]) {
         if (arg_map.find("P") != arg_map.end()) { // we go with part B
             throw "part B not implemented yet";
         } else {
-            stream.process_stream(req_metadata);
+            stream.process_stream(req_metadata, write_mp3, write_meta);
         }
     } catch (const char *msg) { // catches argument validation errs
         std::cerr << msg << '\n';

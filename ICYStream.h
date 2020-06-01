@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cassert>
 #include <signal.h>
+#include <functional>
 
 
 #define INIT_BUFFER_SIZE 4096
@@ -106,6 +107,14 @@ struct BufferTooSmallToContainRequestException : public ICYStramException {
         return "BufferTooSmallToContainRequestException";
     }
 };
+
+struct StreamDataAccesException : public ICYStramException {
+    const char* what() const throw() {
+        return "StreamDataAccesException";
+    }
+};
+
+using data_accesor = std::function<int(const char*, int len)>;
 
 
 class ICYStream {
@@ -266,7 +275,6 @@ class ICYStream {
             else throw StreamErrorException();
         }
         last_read += r;
-        assert(last_read - last_processed >= 0);
         return r;
     }
 
@@ -362,37 +370,47 @@ class ICYStream {
     }
 
     /* reads at least n bytes, pushes last_processed n bytes forward, and writes n bytes to FILE */
-    void write_n_bytes(struct pollfd pollfd[1], int n, FILE *f) noexcept(false) {
+    void acces_n_bytes(struct pollfd pollfd[1], int n, data_accesor accesor) noexcept(false) {
         int processed = 0;
+        int accesed;
         while (processed < n) {
             read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
-            int to_write = std::min(n - processed, not_processed);
-            int written = fwrite(last_processed, 1, to_write, f);
-            if (written != to_write)
-                throw StreamErrorException();
-            processed += to_write;
-            last_processed += to_write;
+            int to_acces = std::min(n - processed, not_processed);
+            try {
+               accesed = accesor(last_processed, to_acces);
+            } catch (...) {
+                throw StreamDataAccesException();
+            }
+            if (accesed != to_acces)
+                throw StreamDataAccesException();
+            processed += to_acces;
+            last_processed += to_acces;
             swap_buffer();
         }
     }
 
-    void process_stream_content(struct pollfd pollfd[1]) noexcept(false) {
+    void process_stream_content(struct pollfd pollfd[1], data_accesor accesor) noexcept(false) {
+        int accesed;
         while (!stop_processing) {
             read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
-            int written = fwrite(last_processed, 1, not_processed, stdout);
-            if (written != not_processed)
-                throw StreamErrorException();
+            try {
+                accesed = accesor(last_processed, not_processed);
+            } catch (...) {
+                throw StreamDataAccesException();
+            }
+            if (accesed != not_processed)
+                throw StreamDataAccesException();
             last_processed += not_processed;
             swap_buffer();
         }
     }
 
-    void process_stream_content(struct pollfd pollfd[1], int metaint) noexcept(false) {
+    void process_stream_content(struct pollfd pollfd[1], int metaint, data_accesor mp3_acc, data_accesor meta_acc) noexcept(false) {
         while (!stop_processing) {
             /* process audio data */
-            write_n_bytes(pollfd, metaint, stdout);
+            acces_n_bytes(pollfd, metaint, mp3_acc);
             /* read data so 'last_processed' is guaranted to point at valid data */
             read_from_sock(pollfd);
             /* now last_processed should point to length_byte */
@@ -400,7 +418,7 @@ class ICYStream {
             int metadata_len = ((uint8_t) *last_processed) * METADATA_SIZE_RATIO;
             last_processed++; /* push 'last_processed' past metadata_len byte */
             swap_buffer();
-            write_n_bytes(pollfd, metadata_len, stderr);
+            acces_n_bytes(pollfd, metadata_len, meta_acc);
         }
     }
 
@@ -414,7 +432,7 @@ class ICYStream {
     }
 
     /* sends mp3 data to stdout, metadata includeing header to stderr, blocks for streaming duration */
-    void process_stream(bool request_metadata) noexcept(false) {
+    void process_stream(bool request_metadata, data_accesor mp3_acc, data_accesor meta_acc) noexcept(false) {
         struct pollfd pollfd[1];
         int sock = set_up_conn(hostname, port);
         pollfd->fd = sock;
@@ -436,12 +454,12 @@ class ICYStream {
 
 
             std::string header_str = header_data_stringify(header_fields);
-            fwrite(header_str.c_str(), 1, header_str.length(), stderr);
+            meta_acc(header_str.c_str(), header_str.length());
 
             if (metaint == 0)
-                process_stream_content(pollfd);
+                process_stream_content(pollfd, mp3_acc);
             else
-                process_stream_content(pollfd, metaint);
+                process_stream_content(pollfd, metaint, mp3_acc, meta_acc);
 
         } catch (SystemCallInterruptionException &e) {
             // Dont throw hopefully its user intended
