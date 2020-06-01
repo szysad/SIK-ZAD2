@@ -18,7 +18,7 @@
 #include <signal.h>
 
 
-#define INIT_BUFFER_SIZE 128 //4096
+#define INIT_BUFFER_SIZE 4096
 #define MILI 1000
 #define READ_ATTEMPTS 3
 #define WAIT_MILI_AFTER_ERR 200
@@ -30,7 +30,7 @@
 
 #define SNPRINTF_UPDATE(last_read, free_b, written_b, ...) {    int tmp;\
                                                                 tmp = snprintf(last_read, free_b, __VA_ARGS__);\
-                                                                if (tmp < 0 || tmp > free_b) throw "snprintf fail";\
+                                                                if (tmp < 0 || tmp > free_b) throw BufferTooSmallToContainRequestException();\
                                                                 last_read += tmp;\
                                                                 free_b -= tmp;\
                                                                 written_b += tmp; }
@@ -101,6 +101,12 @@ struct SystemCallInterruptionException : public ICYStramException {
     }
 };
 
+struct BufferTooSmallToContainRequestException : public ICYStramException {
+    const char* what() const throw() {
+        return "BufferTooSmallToContainRequestException";
+    }
+};
+
 
 class ICYStream {
     
@@ -167,7 +173,7 @@ class ICYStream {
         last_read = buffer;
     }
 
-    int request_to_buff(bool request_metadata) {
+    int request_to_buff(bool request_metadata) noexcept(false) {
         int written_b = 0;
         int free_b = buff_freebytes();
 
