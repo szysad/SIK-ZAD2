@@ -17,7 +17,7 @@
 #include <cassert>
 
 
-#define INIT_BUFFER_SIZE 4056
+#define INIT_BUFFER_SIZE 128 //4096
 #define MILI 1000
 #define READ_ATTEMPTS 3
 #define WAIT_MILI_AFTER_ERR 200
@@ -134,7 +134,6 @@ class ICYStream {
         
         int rc = getaddrinfo(addr.c_str(), port.c_str(), &addr_hints, &addr_result);
         if (rc != 0) {
-            freeaddrinfo(addr_result);
             throw ConnectionCreationErrorException();
         }
 
@@ -148,7 +147,7 @@ class ICYStream {
 
     int buff_freebytes() {
         int already_processed_or_read = last_read - buffer;
-        return buff_size - already_processed_or_read;
+        return buff_size - already_processed_or_read - 1;
     }
 
     void reset_pointers() {
@@ -183,15 +182,17 @@ class ICYStream {
         buff_size *= BUFF_EXPANTION;
     }
 
+    /* use after every last_processed update */
     void swap_buffer() {
         int already_processed = last_processed - buffer;
         int not_processed = last_read - last_processed;
-        std::string before(last_processed, not_processed); // DEBUG
+        if (not_processed == 0) { // we can just reset pointers
+            reset_pointers();
+            return;
+        }
         memmove(buffer, buffer + already_processed, not_processed);
         last_processed = buffer;
         last_read = buffer + not_processed;
-        std::string after(last_processed, not_processed); // DEBUG
-        assert(before == after); // DEBUG
     }
 
     void clear_buffer() {
@@ -213,7 +214,7 @@ class ICYStream {
     char* find_next_rnend() {
         int i = 0;
         char *rn_end = nullptr;
-        while (last_processed + 1 + i < last_read) {
+        while (last_processed + 1 + i < last_read) { // TODO: SIMPLIFY (can be done without +1 in while)
             if (last_processed[i] == '\r' && last_processed[i + 1] == '\n') {
                 rn_end = last_processed + i + 2;
                 break;
@@ -223,13 +224,13 @@ class ICYStream {
         return rn_end;
     }
 
-    void read_from_sock(int sock, struct pollfd pollfd[1], int n) noexcept(false) {
-        assert(n <= buff_freebytes() && n > 0); // DEBUG
+    /* n shuold be buff_freebytes() - 1 for safety */
+    int read_from_sock(int sock, struct pollfd pollfd[1]) noexcept(false) {
         int read_errs = 0;
         if (poll(pollfd, 1, timeout * MILI) != 1)
             throw ConnectionTimedOutException();
 
-        int r = read(sock, last_read, n);
+        int r = read(sock, last_read, buff_freebytes() - 1); // -1 to leave one byte at end for safety
         if (r == 0)
             throw EndOfStreamException();
         if (r < 0) {
@@ -240,6 +241,8 @@ class ICYStream {
             else throw StreamErrorException();
         }
         last_read += r;
+        assert(last_read - last_processed >= 0);
+        return r;
     }
 
 
@@ -251,7 +254,7 @@ class ICYStream {
                 if (buff_freebytes() == 0) {
                     realloc_buffer();
                 }
-                read_from_sock(sock, pollfd, buff_freebytes() - 1); // -1 for 'find_next_rnend()' safety, can throw
+                read_from_sock(sock, pollfd);
             }
         }
         return rn_end;
@@ -307,10 +310,15 @@ class ICYStream {
         return str;
     }
 
-    int get_response_status(std::map<std::string, std::string> &h_fields) {
+    int get_response_status(std::map<std::string, std::string> &h_fields) { //TODO DOESNT WORK FOR 'HTTP/1.0 200 OK'
+        std::regex re("[^0-9]*([0-9]+).*");
+        std::smatch code_match;
+        return 200; // DEBUG
         try {
             const std::string res_line = h_fields.at(RESPONSE_LINE);
-            return std::stoi(res_line.substr(9, 3)); // 9 becouse len("HTTP/1.x ") == 9;
+            if (std::regex_search(res_line, code_match, re))
+                return std::stoi(code_match.str(1)); // 0 woudld mean whole matching string, 1 is first captured group
+            throw HeaderWrongSyntacException(); // it can be whatever, looks bad but whatever
         } catch (...) {
             throw HeaderWrongSyntacException();
         }
@@ -320,7 +328,7 @@ class ICYStream {
     int get_metaint(std::map<std::string, std::string> &h_fields) {
         try {
             const std::string metaint = h_fields.at(METAINT_HEADER_KEY);
-            return std::stoi(metaint); // 9 becouse len("HTTP/1.x ") == 9;
+            return std::stoi(metaint);
         } catch(const std::out_of_range &e) {
             return 0;
         } catch (...) {
@@ -331,26 +339,21 @@ class ICYStream {
     void write_n_bytes(int sock, struct pollfd pollfd[1], int n, FILE *f) noexcept(false) {
         int processed = 0;
         while (processed < n) {
-            read_from_sock(sock, pollfd, buff_freebytes() - 8 /* DEBUG */);
+            read_from_sock(sock, pollfd);
             int not_processed = last_read - last_processed;
             int to_write = std::min(n - processed, not_processed);
-            if (f == stderr) { // DEBUG
-                int written = fwrite(last_processed, 1, to_write, f);
-                if (written != to_write)
-                    throw StreamErrorException();
-            }
+            int written = fwrite(last_processed, 1, to_write, f);
+            if (written != to_write)
+                throw StreamErrorException();
             processed += to_write;
             last_processed += to_write;
-            if (f == stderr) {
-                printf("%c", *(last_processed - 2));
-            }
             swap_buffer();
         }
     }
 
     void process_stream_content(int sock, struct pollfd pollfd[1]) noexcept(false) {
         while (keep_processing) {
-            read_from_sock(sock, pollfd, buff_freebytes());
+            read_from_sock(sock, pollfd);
             int not_processed = last_read - last_processed;
             int written = fwrite(last_processed, 1, not_processed, stdout);
             if (written != not_processed)
@@ -364,15 +367,13 @@ class ICYStream {
         while (keep_processing) {
             /* process audio data */
             write_n_bytes(sock, pollfd, metaint, stdout);
+            assert(buff_freebytes() - 1 > 0);
+            read_from_sock(sock, pollfd); // sp next last_processed + 1 is already read
             /* now last_processed should point to length_byte */
             /* multiplication comes from SHOUTcast documentation */
             int metadata_len = ((uint8_t) *last_processed) * METADATA_SIZE_RATIO;
             last_processed++; /* push last_processed past metadata_len byte */
-            assert(last_processed != buffer + buff_size); // DEBUG
-            std::cout << "next metadata len = " << metadata_len << std::endl;
-            if (metadata_len == 0) { // DEBUG
-                printf("%d", *(last_processed - 1));
-            }
+            swap_buffer();
             write_n_bytes(sock, pollfd, metadata_len, stderr);
         }
     }
