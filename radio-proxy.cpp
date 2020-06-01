@@ -1,18 +1,29 @@
 #include <iostream>
 #include <cassert>
-#include <exception>
+#include <signal.h>
 #include "ArgsParser.h"
+#include "ICYStream.h"
 
 #define M_ARG_YES "yes"
 #define M_ARG_NO "no"
 
-arguments_t validate_args(int argc, char *argv[]) {
+sig_atomic_t stop_processing = false;
+
+void sigint_hanler(int signal) {
+    (void) signal; // silence unused variable warning
+    stop_processing = true;
+}
+
+arguments_t validate_args(int argc, char *argv[]) noexcept(false) {
     ruleset_t args_rules {
         {"h", {true, ARG_DEFAULT_NOT_SET}},
         {"r", {true, ARG_DEFAULT_NOT_SET}},
         {"p", {true, ARG_DEFAULT_NOT_SET}},
         {"m", {false, M_ARG_NO}},
         {"t", {false, "5"}},
+        {"P", {false, ARG_DEFAULT_NOT_SET}}, // decides if we use part A or B
+        {"B", {false, ARG_DEFAULT_NOT_SET}},
+        {"T", {false, "5"}},
     };
 
     ArgsParser parser(args_rules);
@@ -21,7 +32,9 @@ arguments_t validate_args(int argc, char *argv[]) {
     args_map = parser.parse_params(argc - 1, argv + 1);
     auto m_arg = args_map.at("m");
     if (m_arg != M_ARG_NO && m_arg != M_ARG_YES)
-        throw std::runtime_error("invalid value '" + m_arg + "' of key 'm'");
+        throw "invalid value '" + m_arg + "' of key 'm'";
+
+    std::stoi(args_map.at("t")); // will throw if invalid
     
     return args_map;
 }
@@ -31,8 +44,23 @@ int main(int argc, char *argv[]) {
     arguments_t arg_map;
     try {
         arg_map = validate_args(argc, argv);
-    } catch (std::exception &e) {
-        std::cerr << e.what() << '\n';
+        std::string host = arg_map.at("h");
+        std::string port = arg_map.at("p");
+        std::string resource = arg_map.at("r");
+        bool req_metadata = (arg_map.at("m") == M_ARG_YES ? true : false);
+        int timeout = std::stoi(arg_map.at("t"));
+
+        ICYStream stream(host, port, resource, timeout, stop_processing);
+        if (arg_map.find("P") != arg_map.end()) { // we go with part B
+            throw "part B not implemented yet";
+        } else {
+            stream.process_stream(req_metadata);
+        }
+    } catch (const char *msg) { // catches argument validation errs
+        std::cerr << msg << '\n';
+        return 1;
+    } catch (ICYStramException &e) {
+        std::cerr << e.what() << std::endl;
         return 1;
     }
 

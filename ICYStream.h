@@ -15,6 +15,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cassert>
+#include <signal.h>
 
 
 #define INIT_BUFFER_SIZE 128 //4096
@@ -94,6 +95,12 @@ struct ICYMetaIntInvalidValueException : public ICYStramException {
     }
 };
 
+struct SystemCallInterruptionException : public ICYStramException {
+    const char* what() const throw() {
+        return "SystemCallInterruptionException";
+    }
+};
+
 
 class ICYStream {
     
@@ -103,20 +110,23 @@ class ICYStream {
     std::string resource;
     int timeout;
     bool header_fields_set;
-    bool keep_processing;
+    int sockfd;
+    sig_atomic_t stop_processing; // change it outside the class to stop processing
     char *buffer;
     char *last_read;
     char *last_processed;
     std::map<std::string, std::string> header_fields;
 
     public:
-    ICYStream(std::string hostname, std::string port, std::string resource, int timeout) : port(port), hostname(hostname),
-        buff_size(INIT_BUFFER_SIZE), resource(resource), timeout(timeout), header_fields_set(false), keep_processing(true) {
+    ICYStream(std::string hostname, std::string port, std::string resource, int timeout, sig_atomic_t &stop_p) : port(port), hostname(hostname),
+        buff_size(INIT_BUFFER_SIZE), resource(resource), timeout(timeout), header_fields_set(false), sockfd(-1), stop_processing(stop_p) {
             buffer = new char[INIT_BUFFER_SIZE];
             last_read = last_processed = buffer;
         }
     ~ICYStream() {
         delete [] buffer;
+        if (sockfd != -1)
+            close(sockfd);
     }
 
     private:
@@ -141,6 +151,8 @@ class ICYStream {
         freeaddrinfo(addr_result);
         if (rc == -1)
             throw ConnectionCreationErrorException();
+
+        sockfd = sock;
 
         return sock;
     }
@@ -225,12 +237,19 @@ class ICYStream {
     }
 
     /* n shuold be buff_freebytes() - 1 for safety */
-    int read_from_sock(int sock, struct pollfd pollfd[1]) noexcept(false) {
+    int read_from_sock(struct pollfd pollfd[1]) noexcept(false) {
         int read_errs = 0;
-        if (poll(pollfd, 1, timeout * MILI) != 1)
+        if (poll(pollfd, 1, timeout * MILI) != 1) {
+            /* singal call interupted hopefully by user sending signal,
+            if wanted to do properly go multithread */
+            if (errno == EINTR) {
+                errno = 0;
+                throw SystemCallInterruptionException();
+            }
             throw ConnectionTimedOutException();
+        }
 
-        int r = read(sock, last_read, buff_freebytes() - 1); // -1 to leave one byte at end for safety
+        int r = read(pollfd->fd, last_read, buff_freebytes() - 1); // -1 to leave one byte at end for safety
         if (r == 0)
             throw EndOfStreamException();
         if (r < 0) {
@@ -246,7 +265,7 @@ class ICYStream {
     }
 
 
-    char* read_untill_found_rn(int sock, struct pollfd pollfd[1]) noexcept(false) {
+    char* read_untill_found_rn(struct pollfd pollfd[1]) noexcept(false) {
         char *rn_end = nullptr;
         while (rn_end == nullptr) {
             rn_end = find_next_rnend();
@@ -254,7 +273,7 @@ class ICYStream {
                 if (buff_freebytes() == 0) {
                     realloc_buffer();
                 }
-                read_from_sock(sock, pollfd);
+                read_from_sock(pollfd);
             }
         }
         return rn_end;
@@ -285,11 +304,11 @@ class ICYStream {
         }
     }
 
-    void process_header(int sock, struct pollfd pollfd[1]) noexcept(false) {
+    void process_header(struct pollfd pollfd[1]) noexcept(false) {
         int line_len = 16; // whatever bigger then 0
         std::map<std::string, std::string> h_fields;
         while (line_len > 0) {
-            char *eorn = read_untill_found_rn(sock, pollfd);
+            char *eorn = read_untill_found_rn(pollfd);
             line_len = eorn - last_processed - 2; // -2 becouse we dont count /r/n
             if (line_len > 0) {
                 std::string line(last_processed, line_len);
@@ -311,13 +330,13 @@ class ICYStream {
     }
 
     int get_response_status(std::map<std::string, std::string> &h_fields) { //TODO DOESNT WORK FOR 'HTTP/1.0 200 OK'
-        std::regex re("[^0-9]*([0-9]+).*");
+        std::regex re(" +([0-9]{3}) +[a-zA-Z]+");
         std::smatch code_match;
-        return 200; // DEBUG
         try {
             const std::string res_line = h_fields.at(RESPONSE_LINE);
             if (std::regex_search(res_line, code_match, re))
                 return std::stoi(code_match.str(1)); // 0 woudld mean whole matching string, 1 is first captured group
+
             throw HeaderWrongSyntacException(); // it can be whatever, looks bad but whatever
         } catch (...) {
             throw HeaderWrongSyntacException();
@@ -329,17 +348,18 @@ class ICYStream {
         try {
             const std::string metaint = h_fields.at(METAINT_HEADER_KEY);
             return std::stoi(metaint);
-        } catch(const std::out_of_range &e) {
+        } catch(const std::out_of_range &e) { // metaint not given
             return 0;
         } catch (...) {
             throw HeaderWrongSyntacException();
         }
     }
 
-    void write_n_bytes(int sock, struct pollfd pollfd[1], int n, FILE *f) noexcept(false) {
+    /* reads at least n bytes, pushes last_processed n bytes forward, and writes n bytes to FILE */
+    void write_n_bytes(struct pollfd pollfd[1], int n, FILE *f) noexcept(false) {
         int processed = 0;
         while (processed < n) {
-            read_from_sock(sock, pollfd);
+            read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
             int to_write = std::min(n - processed, not_processed);
             int written = fwrite(last_processed, 1, to_write, f);
@@ -351,9 +371,9 @@ class ICYStream {
         }
     }
 
-    void process_stream_content(int sock, struct pollfd pollfd[1]) noexcept(false) {
-        while (keep_processing) {
-            read_from_sock(sock, pollfd);
+    void process_stream_content(struct pollfd pollfd[1]) noexcept(false) {
+        while (!stop_processing) {
+            read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
             int written = fwrite(last_processed, 1, not_processed, stdout);
             if (written != not_processed)
@@ -363,23 +383,23 @@ class ICYStream {
         }
     }
 
-    void process_stream_content(int sock, struct pollfd pollfd[1], int metaint) noexcept(false) {
-        while (keep_processing) {
+    void process_stream_content(struct pollfd pollfd[1], int metaint) noexcept(false) {
+        while (!stop_processing) {
             /* process audio data */
-            write_n_bytes(sock, pollfd, metaint, stdout);
-            assert(buff_freebytes() - 1 > 0);
-            read_from_sock(sock, pollfd); // sp next last_processed + 1 is already read
+            write_n_bytes(pollfd, metaint, stdout);
+            /* read data so 'last_processed' is guaranted to point at valid data */
+            read_from_sock(pollfd);
             /* now last_processed should point to length_byte */
             /* multiplication comes from SHOUTcast documentation */
             int metadata_len = ((uint8_t) *last_processed) * METADATA_SIZE_RATIO;
-            last_processed++; /* push last_processed past metadata_len byte */
+            last_processed++; /* push 'last_processed' past metadata_len byte */
             swap_buffer();
-            write_n_bytes(sock, pollfd, metadata_len, stderr);
+            write_n_bytes(pollfd, metadata_len, stderr);
         }
     }
 
     public:
-    /* will throw if used before 'streamContent' */
+    /* will throw if used before 'process_stream' */
     std::map<std::string, std::string> get_header_fields() noexcept(false) {
         if (header_fields_set == false)
             throw DataNotReceivedYetException();
@@ -387,7 +407,8 @@ class ICYStream {
         return header_fields;
     }
 
-    void streamContent(bool request_metadata) noexcept(false) {
+    /* sends mp3 data to stdout, metadata includeing header to stderr, blocks for streaming duration */
+    void process_stream(bool request_metadata) noexcept(false) {
         struct pollfd pollfd[1];
         int sock = set_up_conn(hostname, port);
         pollfd->fd = sock;
@@ -398,7 +419,7 @@ class ICYStream {
             int req_size = request_to_buff(request_metadata);
             send_to_sock(sock, req_size);
             clear_buffer();
-            process_header(sock, pollfd);
+            process_header(pollfd);
 
             int response_code = get_response_status(header_fields);
             int metaint = get_metaint(header_fields);
@@ -412,12 +433,13 @@ class ICYStream {
             fwrite(header_str.c_str(), 1, header_str.length(), stderr);
 
             if (metaint == 0)
-                process_stream_content(sock, pollfd);
+                process_stream_content(pollfd);
             else
-                process_stream_content(sock, pollfd, metaint);
+                process_stream_content(pollfd, metaint);
 
+        } catch (SystemCallInterruptionException &e) {
+            // Dont throw hopefully its user intended
         } catch (ICYStramException &e) {
-            close(sock);
             throw;
         }
     }
