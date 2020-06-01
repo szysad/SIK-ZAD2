@@ -114,7 +114,10 @@ struct StreamDataAccesException : public ICYStramException {
     }
 };
 
-using data_accesor = std::function<int(const char*, int len)>;
+/* if return value is true, stream processing should be stopped
+    data points at start of data buffer to be accesed,
+    len is number of bytes of data to be accesed */
+using data_accesor = std::function<bool(const char* data, int len)>;
 
 
 class ICYStream {
@@ -369,21 +372,23 @@ class ICYStream {
         }
     }
 
+    void stop_stream_processing() {
+        stop_processing = true;
+    }
+
     /* reads at least n bytes, pushes last_processed n bytes forward, and writes n bytes to FILE */
     void acces_n_bytes(struct pollfd pollfd[1], int n, data_accesor accesor) noexcept(false) {
         int processed = 0;
-        int accesed;
         while (processed < n) {
             read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
             int to_acces = std::min(n - processed, not_processed);
             try {
-               accesed = accesor(last_processed, to_acces);
+                if (accesor(last_processed, to_acces))
+                    stop_stream_processing();
             } catch (...) {
                 throw StreamDataAccesException();
             }
-            if (accesed != to_acces)
-                throw StreamDataAccesException();
             processed += to_acces;
             last_processed += to_acces;
             swap_buffer();
@@ -391,17 +396,15 @@ class ICYStream {
     }
 
     void process_stream_content(struct pollfd pollfd[1], data_accesor accesor) noexcept(false) {
-        int accesed;
         while (!stop_processing) {
             read_from_sock(pollfd);
             int not_processed = last_read - last_processed;
             try {
-                accesed = accesor(last_processed, not_processed);
+                if (accesor(last_processed, not_processed))
+                    stop_stream_processing();
             } catch (...) {
                 throw StreamDataAccesException();
             }
-            if (accesed != not_processed)
-                throw StreamDataAccesException();
             last_processed += not_processed;
             swap_buffer();
         }

@@ -50,11 +50,13 @@ arguments_t validate_args(int argc, char *argv[]) noexcept(false) {
 }
 
 data_accesor write_mp3 = [](const char *data, int data_len) {
-    return fwrite(data, 1, data_len, stdout);
+    fwrite(data, 1, data_len, stdout);
+    return false;
 };
 
 data_accesor write_meta = [](const char *data, int data_len) {
-    return fwrite(data, 1, data_len, stderr);
+    fwrite(data, 1, data_len, stderr);
+    return false;
 };
 
 int main(int argc, char *argv[]) {
