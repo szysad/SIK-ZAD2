@@ -17,16 +17,16 @@ class ArgsParser {
     arguments_t parse_params(int argc, char *argv[]) noexcept(false) {
         arguments_t params;
         if (argc % 2 == 1)
-            throw std::runtime_error("not all values match their key");
+            throw "not all values match their key";
         for (int i = 0; i < argc; i += 2) {
             if (argv[i][0] != '-')
-                throw std::runtime_error("key '" + std::string(argv[i]) + "' not starting with '-'");
+                throw "key not starting with '-'";
             std::string key(argv[i] + 1); /* +1 to remove '-' from start */
             if (rules.find(key) == rules.end())
-                throw std::runtime_error("key '" + key + "' not included in rules");
+                throw "key not included in rules";
             auto ret = params.insert({key, std::string(argv[i + 1])});
             if (!ret.second)
-                throw std::runtime_error("same key '" + key + "' given more then one");
+                throw "same key given more then one";
         }
 
         /* check if all mandatory params are inserted and set deafult values if not set */
@@ -35,7 +35,7 @@ class ArgsParser {
             if (it->second.first) {
                 /* param is mandatory */
                 if (params.find(it->first) == params.end())
-                    throw std::runtime_error("mandatory arg '" + it->first + "' not given");
+                    throw "mandatory arg not given";
             } else {
                 /* if arg not mandatory, has deafult value and is not set, set deafult value */
                 if (params.find(it->first) == params.end() && it->second.second != ARG_DEFAULT_NOT_SET)

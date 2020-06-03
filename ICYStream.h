@@ -136,7 +136,7 @@ class ICYStream {
     std::map<std::string, std::string> header_fields;
 
     public:
-    ICYStream(std::string hostname, std::string port, std::string resource, int timeout, sig_atomic_t &stop_p) : port(port), hostname(hostname),
+    ICYStream(const std::string &hostname, const std::string &port, const std::string &resource, int timeout, sig_atomic_t &stop_p) : port(port), hostname(hostname),
         buff_size(INIT_BUFFER_SIZE), resource(resource), timeout(timeout), header_fields_set(false), sockfd(-1), stop_processing(stop_p) {
             buffer = new char[INIT_BUFFER_SIZE];
             last_read = last_processed = buffer;
@@ -212,7 +212,7 @@ class ICYStream {
         buff_size *= BUFF_EXPANTION;
     }
 
-    /* use after every last_processed update */
+    /* use after every 'last_processed' update */
     void swap_buffer() {
         int already_processed = last_processed - buffer;
         int not_processed = last_read - last_processed;
@@ -254,7 +254,6 @@ class ICYStream {
         return rn_end;
     }
 
-    /* n shuold be buff_freebytes() - 1 for safety */
     int read_from_sock(struct pollfd pollfd[1]) noexcept(false) {
         int read_errs = 0;
         if (poll(pollfd, 1, timeout * MILI) != 1) {
@@ -346,7 +345,7 @@ class ICYStream {
         return str;
     }
 
-    int get_response_status(std::map<std::string, std::string> &h_fields) { //TODO DOESNT WORK FOR 'HTTP/1.0 200 OK'
+    int get_response_status(std::map<std::string, std::string> &h_fields) {
         std::regex re(" +([0-9]{3}) +[a-zA-Z]+");
         std::smatch code_match;
         try {
