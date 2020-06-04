@@ -1,3 +1,6 @@
+#ifndef C5C89C9B_23A9_48C0_91D6_7DE862D0FDA0
+#define C5C89C9B_23A9_48C0_91D6_7DE862D0FDA0
+
 #include <poll.h>
 #include <string>
 #include <sys/socket.h>
@@ -470,3 +473,5 @@ class ICYStream {
         }
     }
 };
+
+#endif /* C5C89C9B_23A9_48C0_91D6_7DE862D0FDA0 */

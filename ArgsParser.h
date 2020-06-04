@@ -1,3 +1,6 @@
+#ifndef F6511DBE_EC84_4A1B_B44A_966312F3CBD2
+#define F6511DBE_EC84_4A1B_B44A_966312F3CBD2
+
 #include <map>
 
 #define ARG_DEFAULT_NOT_SET ""
@@ -45,3 +48,5 @@ class ArgsParser {
         return params;
     }
 };
+
+#endif /* F6511DBE_EC84_4A1B_B44A_966312F3CBD2 */

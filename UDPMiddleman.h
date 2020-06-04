@@ -1,3 +1,6 @@
+#ifndef E0B4F753_4728_4630_AEBD_B4B78AE118F8
+#define E0B4F753_4728_4630_AEBD_B4B78AE118F8
+
 #include <string>
 #include <sys/socket.h>
 #include <poll.h>
@@ -77,6 +80,7 @@ struct MemoryAllocationErrorException : public UDPMiddlemanException {
     }
 };
 
+//TODO put in anonyomus namespace
 enum header_type : uint16_t {DISCOVER = 1, IAM = 2, KEEPALIVE = 3, AUDIO = 4, METADATA = 6};
 using header = std::pair<header_type, uint16_t>; /* <type, length> */
 enum client_state {TRANSMISION_NOT_STARTED, TRANSMISION_STARTED};
@@ -103,7 +107,7 @@ class UDPMIddleman {
             buffer = new char[INIT_BUFFER_SIZE];
             last_processed = last_read = buffer;
             buffer_size = INIT_BUFFER_SIZE;
-            prepare_conn();
+            sock = set_up_conn();
         }
 
     ~UDPMIddleman() {
@@ -129,6 +133,7 @@ class UDPMIddleman {
 
         if (mulitcast_addr != MULTICAST_ADDR_NOT_GIVEN) {
             ip_memship.imr_address.s_addr = htonl(INADDR_ANY);
+            ip_memship.imr_ifindex = 0;
             if (inet_aton(mulitcast_addr.c_str(), &ip_memship.imr_multiaddr) == 0)
                 throw ConnectionCreationException();
 
@@ -169,11 +174,6 @@ class UDPMIddleman {
 
     int buffer_freebytes() {
         return buffer_size - (last_read - buffer) - 1;
-    }
-    
-    /* get to know why without this wrapper in constructor setsockopt fails */
-    void prepare_conn() {
-        sock = set_up_conn();
     }
 
     /* if something is read return true, sets id and update buffer pointers */
@@ -358,3 +358,5 @@ class UDPMIddleman {
         broadcast_iteration(METADATA, data, data_len);
     }
 };
+
+#endif /* E0B4F753_4728_4630_AEBD_B4B78AE118F8 */
