@@ -3,6 +3,7 @@
 #include <signal.h>
 #include "ArgsParser.h"
 #include "ICYStream.h"
+#include "UDPMiddleman.h"
 
 #define METADATA_YES "yes"
 #define METADATA_NO "no"
@@ -14,6 +15,8 @@
 #define CLIENT_LOCAL_PORT "P"
 #define CLIENT_MULTICAST_ADDR "B"
 #define CLIENT_TIMEOUT "T"
+
+#define PROXY_DSC "radio kopyto"
 
 
 sig_atomic_t stop_processing = false;
@@ -41,11 +44,16 @@ arguments_t validate_args(int argc, char *argv[]) noexcept(false) {
     args_map = parser.parse_params(argc - 1, argv + 1);
     auto m_arg = args_map.at(REQUEST_METADATA);
     if (m_arg != METADATA_NO && m_arg != METADATA_YES)
-        throw "invalid value '" + m_arg + "' of key '" + REQUEST_METADATA + "'";
-
-    if (std::stoi(args_map.at(STREAM_TIMEOUT)) <= 0) // will throw if invalid
-        throw "timeout must be positive integer";
+        throw "invalid value of -m";
     
+    try {
+        if (std::stoi(args_map.at(CLIENT_TIMEOUT)) <= 0)
+            throw "whatever";
+        if (std::stoi(args_map.at(STREAM_TIMEOUT)) <= 0)
+            throw "whatever";
+    } catch (...) {
+        throw "invalid timeout value";
+    }    
     return args_map;
 }
 
@@ -64,15 +72,25 @@ int main(int argc, char *argv[]) {
     arguments_t arg_map;
     try {
         arg_map = validate_args(argc, argv);
-        std::string host = arg_map.at(STREAM_HOST);
-        std::string port = arg_map.at(STREAM_PORT);
-        std::string resource = arg_map.at(STREAM_RESOURCE);
         bool req_metadata = (arg_map.at(REQUEST_METADATA) == METADATA_YES ? true : false);
-        int timeout = std::stoi(arg_map.at(STREAM_TIMEOUT));
+        int stream_timeout = std::stoi(arg_map.at(STREAM_TIMEOUT));
 
-        ICYStream stream(host, port, resource, timeout, stop_processing);
+        ICYStream stream(arg_map.at(STREAM_HOST), arg_map.at(STREAM_PORT), arg_map.at(STREAM_RESOURCE), stream_timeout, stop_processing);
         if (arg_map.find(CLIENT_LOCAL_PORT) != arg_map.end()) { // we go with part B
-            return 2;
+            int cli_timeout = std::stoi(arg_map.at(CLIENT_TIMEOUT));
+            std::string mul_addr = (arg_map.find(CLIENT_MULTICAST_ADDR) != arg_map.end() ? arg_map.at(CLIENT_MULTICAST_ADDR) : MULTICAST_ADDR_NOT_GIVEN);
+            UDPMIddleman proxy(arg_map.at(CLIENT_LOCAL_PORT), mul_addr, cli_timeout, PROXY_DSC);
+
+            data_accesor broadcast_audio = [&proxy](const char *data, int d_len) {
+                proxy.broadcast_audio_iteration(data, d_len);
+                return false;
+            };
+            data_accesor broadcast_meta = [&proxy](const char *data, int d_len) {
+                proxy.broadcast_meta_iteration(data, d_len);
+                return false;
+            };
+
+            stream.process_stream(req_metadata, broadcast_audio, broadcast_meta);
         } else {
             stream.process_stream(req_metadata, write_mp3, write_meta);
         }
