@@ -201,17 +201,15 @@ class UDPMIddleman {
         client_addr.sin_port = id.second;
         client_addr.sin_addr.s_addr = id.first;
         char *last_processed_starting_val = last_processed;
-        while (last_processed < last_read) {
-            int r = sendto(sock, last_processed, last_read - last_processed, 0, (struct sockaddr*) &client_addr, sizeof(client_addr));
-            if (r == -1) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) { // send would block kerner buffer or whatever
-                    last_processed = last_processed_starting_val;
-                    return false;
-                }
-                throw SendErrorException();
+        int r = sendto(sock, last_processed, last_read - last_processed, 0, (struct sockaddr*) &client_addr, sizeof(client_addr));
+        if (r == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { // send would block kerner buffer or whatever
+                last_processed = last_processed_starting_val;
+                return false;
             }
-            last_processed += r;
+            throw SendErrorException();
         }
+        last_processed += r;
         return true;
     }
 
@@ -269,10 +267,10 @@ class UDPMIddleman {
         if (buffer_freebytes() < static_cast<int>(HEADER_LEN))
             throw NotEnoughtBufferSpaceException();
 
-        int can_be_written = std::min(buffer_freebytes(), static_cast<int>(rsp.length() + HEADER_LEN));
-        build_header({IAM, can_be_written});
-        memcpy(last_read, rsp.c_str(), can_be_written);
-        last_read += can_be_written;
+        int msg_len = static_cast<int>(rsp.length());
+        build_header({IAM, msg_len});
+        memcpy(last_read, rsp.c_str(), msg_len);
+        last_read += msg_len;
     }
 
     void delete_timeouted_clients() noexcept(false) {
@@ -314,26 +312,22 @@ class UDPMIddleman {
                 if (h.first == DISCOVER) {
                     clear_buffer();
                     // wont throw, becouse update_client_data added him to clients
-                    client_data data = clients.at(client);
-                    if (data.second == TRANSMISION_NOT_STARTED)
-                        data.second = TRANSMISION_STARTED;
-                    build_IAM_res(desc);
-                    try_send_datagram_to(client);
+                    auto data_it = clients.find(client);
+                    if (data_it->second.second == TRANSMISION_NOT_STARTED) {
+                        data_it->second.second = TRANSMISION_STARTED;
+                        build_IAM_res(desc);
+                        try_send_datagram_to(client);
+                    }
                 }
                 preocessed_requests++;
             }
         } catch (...) {
             ERR_CNT_INC_OR_THROW(errors, ERRORS_THRESHOLD)
         }
+        
+        delete_timeouted_clients();
         clear_buffer();
-        try {
-            delete_timeouted_clients();
-            build_DATA_res(type, data, data_len);
-        } catch (TimeErrorException &e) {
-            // well just dont delete timeouted clients
-        } catch (...) {
-            ERR_CNT_INC_OR_THROW(errors, ERRORS_THRESHOLD)
-        }
+        build_DATA_res(type, data, data_len);
         
         for(auto it = clients.begin(); it != clients.end(); it++) {
             char* org_last_proc = last_processed;

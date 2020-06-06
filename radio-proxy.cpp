@@ -1,9 +1,9 @@
 #include <iostream>
-#include <cassert>
 #include <signal.h>
 #include "ArgsParser.h"
 #include "ICYStream.h"
 #include "UDPMiddleman.h"
+
 
 #define METADATA_YES "yes"
 #define METADATA_NO "no"
@@ -66,6 +66,7 @@ data_accesor write_meta = [](const char *data, int data_len) {
     fwrite(data, 1, data_len, stderr);
     return false;
 };
+
 
 int main(int argc, char *argv[]) {
 

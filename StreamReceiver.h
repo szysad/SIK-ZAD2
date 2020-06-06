@@ -12,11 +12,17 @@
 #include <fcntl.h>
 #include <chrono>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <functional>
 
 
 #define SOCK_ERR -1
 #define HEADER_LEN sizeof(uint16_t) * 2 // 4 octets
 #define RADIOS_SCANNING_TIME_MILI 500
+#define CONN_TRIES 5
+#define MAX_BUF_SIZE 8192
 
 
 struct StreamReceiverException : public std::exception {
@@ -56,6 +62,7 @@ struct BufferTooSmallException : public StreamReceiverException {
 };
 
     using radio = std::pair<std::string, sockaddr_in>;
+    using data_accesor = std::function<void(std::string &data)>;
 namespace {
     enum header_type : uint16_t {DISCOVER = 1, IAM = 2, KEEPALIVE = 3, AUDIO = 4, METADATA = 6};
     std::vector<uint16_t> header_type_vals = {DISCOVER, IAM, KEEPALIVE, AUDIO, METADATA};
@@ -69,18 +76,22 @@ class StreamReceiver {
     std::vector<char> buffer;
     int buff_start;
     int buff_end;
+    std::atomic_bool connected;
     struct in_addr bcast_addr;
+    std::thread conn_keeper;
+    std::mutex m;
 
     public:
-    StreamReceiver(const char* bcast_addr_raw, uint16_t bcast_port, int bcast_timeout, int max_msg_len) : 
-        bcast_port(bcast_port), bcast_timeout(bcast_timeout),
-        bcast_sock(SOCK_ERR), buffer(max_msg_len, 0), buff_start(0), buff_end(0) {
+    StreamReceiver(const char* bcast_addr_raw, uint16_t bcast_port, int bcast_timeout) : 
+        bcast_port(bcast_port), bcast_timeout(bcast_timeout), bcast_sock(SOCK_ERR),
+        buffer(MAX_BUF_SIZE, 0), buff_start(0), buff_end(0), connected(false) {
             if (inet_aton(bcast_addr_raw, &bcast_addr) == 0)
                 throw InvalidAddrException();
             set_up_sock();
         }
 
     ~StreamReceiver() {
+        disconnect();
         if (bcast_sock != SOCK_ERR)
             close(bcast_sock);
     }
@@ -188,13 +199,76 @@ class StreamReceiver {
         buff_start += sizeof(uint16_t);
         memcpy(&len, buff_ptr(buff_start), sizeof(uint16_t));
         buff_start += sizeof(uint16_t);
-        if (len > buff_freebytes())
+        if (len > MAX_BUF_SIZE) {
             return false;
+        } else if (len > buffer.size() && buffer.size() < MAX_BUF_SIZE) {
+            buffer.resize(std::min(static_cast<uint16_t>(MAX_BUF_SIZE), len));
+        }
         
-        content = std::string(buff_ptr(buff_start), len);
+        content.assign(buff_ptr(buff_start), len);
         type = (header_type) type_raw;
         buff_start += len;
         return true;
+    }
+
+    inline bool cmp_addr(struct sockaddr_in &a1, struct sockaddr_in &a2) {
+        bool yes = true;
+        yes &= (a1.sin_addr.s_addr == a2.sin_addr.s_addr);
+        yes &= (a1.sin_family == a2.sin_family);
+        yes &= (a1.sin_port == a2.sin_port);
+        return yes;
+    }
+
+    void conn_keeper_routine(radio r, data_accesor mp3_acc, data_accesor meta_acc) {
+        auto keepalive_t0 = std::chrono::system_clock::now();
+        auto timeout_t0 = keepalive_t0;
+        while(connected) {
+            auto t_now = std::chrono::system_clock::now();
+            int64_t t_timeout_diff = std::chrono::duration_cast<std::chrono::seconds>(t_now - timeout_t0).count();
+            if (t_timeout_diff >= bcast_timeout) {
+                connected = false; 
+                break;
+            }
+            int64_t t_keepalive_diff = std::chrono::duration_cast<std::chrono::seconds>(t_now - keepalive_t0).count();
+            header_type type;
+            std::string msg;
+            { // critical section start
+                std::lock_guard<std::mutex> buff_acces(m);
+                clear_buffer();
+                struct sockaddr_in addr;
+                int received;
+                try {
+                    if (t_keepalive_diff >= bcast_timeout) {
+                        keepalive_t0 = std::chrono::system_clock::now();
+                        build_HEADER(KEEPALIVE, 0);
+                        try {
+                            try_send_msg(r.second);
+                        } catch (...) {
+                            connected = false;
+                            break;
+                        }
+                        clear_buffer();
+                    }
+                    received = try_receive_msg(addr);
+                } catch (...) {
+                    connected = false;
+                    break;
+                }
+                // if didnt receive go back;
+                if (!received)
+                    continue;
+                // if not my radio ignore
+                if (!cmp_addr(addr, r.second))
+                    continue;
+
+                if (!parse_msg(type, msg))
+                    continue;
+            } // critical section end
+            // process message and reset timeout counter
+            if (type == AUDIO) mp3_acc(msg);
+            else if (type == METADATA) meta_acc(msg);
+            timeout_t0 = std::chrono::system_clock::now();
+        }
     }
 
     public:
@@ -204,6 +278,7 @@ class StreamReceiver {
         addr.sin_port = htons(bcast_port);
         addr.sin_addr = bcast_addr;
 
+        const std::lock_guard<std::mutex> buff_acces(m);
         clear_buffer();
         build_HEADER(DISCOVER, 0);
         if (!try_send_msg(addr)) // couldnt send so just return no results
@@ -227,6 +302,26 @@ class StreamReceiver {
         } while (t_diff < RADIOS_SCANNING_TIME_MILI);
         
         return radios;
+    }
+
+    void disconnect() {
+        connected = false;
+        if (conn_keeper.joinable())
+            conn_keeper.join();
+    }
+
+    bool is_connected() {
+        return connected;
+    }
+
+    void connect_to_radio(radio &r, data_accesor mp3_acc, data_accesor meta_acc) {
+        const std::lock_guard<std::mutex> buff_acces(m);
+        clear_buffer();
+        build_HEADER(DISCOVER, 0);
+        if (try_send_msg(r.second)) {
+            connected = true;
+            conn_keeper = std::thread(&StreamReceiver::conn_keeper_routine, this, r, mp3_acc, meta_acc);
+        }
     }
 
 };
