@@ -69,7 +69,6 @@ data_accesor write_meta = [](const char *data, int data_len) {
 
 
 int main(int argc, char *argv[]) {
-
     arguments_t arg_map;
     try {
         arg_map = validate_args(argc, argv);

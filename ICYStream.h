@@ -340,14 +340,6 @@ class ICYStream {
         header_fields = h_fields;
     }
 
-    std::string header_data_stringify(std::map<std::string, std::string> &h_fields) {
-        std::string str;
-        for (auto it = h_fields.begin(); it != h_fields.end(); it++) {
-            str.append(it->first + " : " + it->second + "\n");
-        }
-        return str;
-    }
-
     int get_response_status(std::map<std::string, std::string> &h_fields) {
         std::regex re(" +([0-9]{3}) +[a-zA-Z]+");
         std::smatch code_match;
@@ -456,10 +448,6 @@ class ICYStream {
                 throw ResponseCodeNot200Exception();
             if (metaint < 0)
                 throw ICYMetaIntInvalidValueException();
-
-
-            std::string header_str = header_data_stringify(header_fields);
-            meta_acc(header_str.c_str(), header_str.length());
 
             if (metaint == 0)
                 process_stream_content(pollfd, mp3_acc);
